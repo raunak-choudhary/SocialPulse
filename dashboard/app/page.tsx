@@ -1,60 +1,59 @@
-// dashboard/app/page.tsx
 "use client";
-import React from 'react';
-import useSWR from 'swr';
-import TrendHunter from './components/TrendHunter';
-import SafetyRisk from './components/SafetyRisk';
-import { Activity } from 'lucide-react';
+import React, { useState } from 'react';
+import MainDashboard from './components/MainDashboard';
+import AnalyticsView from './components/AnalyticsView';
+// Import AdvancedView similarly...
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json());
-
-export default function Dashboard() {
-  // Poll APIs
-  const { data: posts, isLoading: postsLoading } = useSWR('/api/stream', fetcher, { refreshInterval: 2000 });
-  const { data: trends } = useSWR('/api/trends', fetcher, { refreshInterval: 5000 });
+export default function Page() {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'analytics' | 'advanced'>('dashboard');
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans">
-      {/* Header */}
-      <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center gap-3">
-          <Activity className="text-blue-500" />
-          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
-            Bluesky Intelligence Platform
-          </h1>
+      
+      {/* Navigation Bar (matches index.html) */}
+      <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          
+          <div className="flex items-center gap-2">
+             <h1 className="text-xl font-bold font-mono tracking-tighter">
+               Social<span className="text-blue-500">●</span>Pulse
+             </h1>
+          </div>
+
+          <div className="flex gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
+            {['dashboard', 'analytics', 'advanced'].map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab as any)}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                  activeTab === tab 
+                    ? 'bg-blue-600 text-white shadow' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-emerald-950/30 px-3 py-1 rounded-full border border-emerald-900">
+            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+            LIVE
+          </div>
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto p-6 space-y-6">
-        
-        {/* TOP ROW: THE ANALYTICS GRID */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[500px]">
-          
-          {/* 1. Trend Hunter View (Takes up 2/3 width) */}
-          <div className="lg:col-span-2 h-full">
-            <TrendHunter trends={trends || []} posts={posts || []} />
+      {/* View Switcher */}
+      <main className="max-w-7xl mx-auto py-6">
+        {activeTab === 'dashboard' && <MainDashboard />}
+        {activeTab === 'analytics' && <AnalyticsView />}
+        {activeTab === 'advanced' && (
+          <div className="p-10 text-center text-slate-500">
+            Advanced Data Explorer (Table View) Component Goes Here
           </div>
-
-          {/* 2. Safety & Risk View (Takes up 1/3 width) */}
-          <div className="lg:col-span-1 h-full">
-            <SafetyRisk posts={posts || []} />
-          </div>
-        </div>
-
-        {/* BOTTOM ROW: RAW FEED (Simplified) */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-          <h3 className="text-slate-400 text-sm font-bold uppercase tracking-wider mb-4">Raw Ingestion Stream</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-             {posts?.slice(0, 6).map((post: any) => (
-                <div key={post.post_id} className="bg-slate-950/50 p-3 rounded border border-slate-800/50 text-xs text-slate-400 font-mono truncate">
-                  <span className="text-blue-500 mr-2">@{post.author}</span>
-                  {post.text}
-                </div>
-             ))}
-          </div>
-        </div>
-
+        )}
       </main>
+
     </div>
   );
 }
