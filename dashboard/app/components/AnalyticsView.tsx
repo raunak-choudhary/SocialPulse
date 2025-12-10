@@ -48,9 +48,14 @@ interface BasicDistResponse {
   data: number[];
 }
 
+// -----------------------------
 // Fetcher
+// -----------------------------
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
+// ======================================================================
+// MAIN COMPONENT
+// ======================================================================
 export default function AnalyticsView() {
   // HOURLY ENGAGEMENT
   const { data: hourly } = useSWR(
@@ -59,7 +64,7 @@ export default function AnalyticsView() {
     { refreshInterval: 8000 }
   );
 
-  // SENTIMENT TIMELINE (now from charts route)
+  // SENTIMENT TIMELINE
   const { data: sentiment } = useSWR<SentimentResponse>(
     "/api/dashboard/charts?type=sentiment_timeline",
     fetcher,
@@ -80,9 +85,9 @@ export default function AnalyticsView() {
     { refreshInterval: 12000 }
   );
 
-  // -----------------------------
+  // ======================================================================
   // HOURLY ENGAGEMENT DATA
-  // -----------------------------
+  // ======================================================================
   const hourlyData = {
     labels: hourly?.labels || [],
     datasets: [
@@ -137,12 +142,12 @@ export default function AnalyticsView() {
     },
   };
 
-  // -----------------------------
-  // SENTIMENT TIMELINE MERGED
-  // -----------------------------
-  const sentimentTimeline: SentimentPoint[] = sentiment?.timeline || [];
-  const sentimentLabels = sentimentTimeline.map(
-    (p: SentimentPoint) => `${p.hour.toString().padStart(2, "0")}:00`
+  // ======================================================================
+  // SENTIMENT TIMELINE
+  // ======================================================================
+  const sentimentTimeline = sentiment?.timeline || [];
+  const sentimentLabels = sentimentTimeline.map((p) =>
+    `${p.hour.toString().padStart(2, "0")}:00`
   );
 
   const sentimentData = {
@@ -215,9 +220,9 @@ export default function AnalyticsView() {
     },
   };
 
-  // -----------------------------
-  // TOPIC DISTRIBUTION (PIE) – no greens
-  // -----------------------------
+  // ======================================================================
+  // TOPIC DISTRIBUTION (PIE) — with REAL TOPIC NAMES
+  // ======================================================================
   const topicPieData = {
     labels: topicDist?.labels || [],
     datasets: [
@@ -263,9 +268,9 @@ export default function AnalyticsView() {
     },
   };
 
-  // -----------------------------
-  // LANGUAGE DISTRIBUTION (PIE) – only one green
-  // -----------------------------
+  // ======================================================================
+  // LANGUAGE DISTRIBUTION (PIE)
+  // ======================================================================
   const langPieData = {
     labels: langDist?.labels || [],
     datasets: [
@@ -275,11 +280,11 @@ export default function AnalyticsView() {
           "#F97316", // orange
           "#3B82F6", // blue
           "#EC4899", // pink
-          "#22C55E", // green (only one)
+          "#22C55E", // green
           "#EAB308", // yellow
           "#06B6D4", // cyan
           "#A855F7", // purple
-          "#F43F5E", // red/rose
+          "#F43F5E", // rose
           "#0EA5E9", // sky
           "#FB923C", // light orange
         ],
@@ -311,12 +316,15 @@ export default function AnalyticsView() {
     },
   };
 
+  // ======================================================================
+  // RENDER PAGE
+  // ======================================================================
   return (
     <div className="p-6 space-y-6">
       {/* ROW 1: Hourly + Sentiment Timeline */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Hourly Engagement Pattern */}
-        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px] col-span-1">
+        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px]">
           <h3 className="text-gray-300 font-semibold mb-4">
             Hourly Engagement Pattern
           </h3>
@@ -326,7 +334,7 @@ export default function AnalyticsView() {
         </div>
 
         {/* Sentiment Timeline */}
-        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px] col-span-1">
+        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px]">
           <h3 className="text-gray-300 font-semibold mb-4">
             Sentiment Timeline
           </h3>
@@ -341,14 +349,14 @@ export default function AnalyticsView() {
         {/* Topic Distribution Pie */}
         <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[420px]">
           <h3 className="text-gray-300 font-semibold mb-4">
-            Topic Distribution
+            Topic Distribution (Last 24 Hours)
           </h3>
           <div className="h-[340px]">
             {topicDist && topicDist.data.length > 0 ? (
               <Pie data={topicPieData} options={topicPieOptions} />
             ) : (
               <p className="text-gray-500 text-sm">
-                Waiting for topics… (pipeline still warming up?)
+                Waiting for topic data…
               </p>
             )}
           </div>
