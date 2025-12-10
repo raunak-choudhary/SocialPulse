@@ -103,6 +103,9 @@ export async function GET(request: Request) {
         .aggregate([
           { $match: { created_at: { $gte: oneDayAgo, $lte: now } } },
           { $unwind: "$entities" },
+          {$match: {
+            "entities.label": { $in: ["PERSON", "ORG", "GPE", "EVENT", "PRODUCT", "WORK_OF_ART"] }
+          }},
           {
             $group: {
               _id: "$entities.text",
