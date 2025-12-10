@@ -2,7 +2,6 @@
 
 import React from "react";
 import useSWR from "swr";
-
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -10,12 +9,12 @@ import {
   BarElement,
   PointElement,
   LineElement,
+  ArcElement,
   Tooltip,
   Legend,
   ChartOptions,
 } from "chart.js";
-
-import { Bar, Line } from "react-chartjs-2";
+import { Bar, Line, Pie } from "react-chartjs-2";
 
 // Register chart components
 ChartJS.register(
@@ -24,12 +23,13 @@ ChartJS.register(
   BarElement,
   PointElement,
   LineElement,
+  ArcElement,
   Tooltip,
   Legend
 );
 
 // -----------------------------
-// TYPES FOR SENTIMENT TIMELINE
+// TYPES
 // -----------------------------
 interface SentimentPoint {
   hour: number;
@@ -43,6 +43,11 @@ interface SentimentResponse {
   timeline: SentimentPoint[];
 }
 
+interface BasicDistResponse {
+  labels: string[];
+  data: number[];
+}
+
 // Fetcher
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -50,18 +55,33 @@ export default function AnalyticsView() {
   // HOURLY ENGAGEMENT
   const { data: hourly } = useSWR(
     "/api/dashboard/charts?type=activity_hourly",
-    fetcher
+    fetcher,
+    { refreshInterval: 8000 }
   );
 
-  // SENTIMENT TIMELINE
+  // SENTIMENT TIMELINE (now from charts route)
   const { data: sentiment } = useSWR<SentimentResponse>(
-    "/api/dashboard/sentiment",
+    "/api/dashboard/charts?type=sentiment_timeline",
     fetcher,
     { refreshInterval: 6000 }
   );
 
+  // TOPIC DISTRIBUTION (last 24h)
+  const { data: topicDist } = useSWR<BasicDistResponse>(
+    "/api/dashboard/charts?type=topic_dist",
+    fetcher,
+    { refreshInterval: 12000 }
+  );
+
+  // LANGUAGE DISTRIBUTION (last 24h)
+  const { data: langDist } = useSWR<BasicDistResponse>(
+    "/api/dashboard/charts?type=language_dist",
+    fetcher,
+    { refreshInterval: 12000 }
+  );
+
   // -----------------------------
-  //   HOURLY ENGAGEMENT DATA
+  // HOURLY ENGAGEMENT DATA
   // -----------------------------
   const hourlyData = {
     labels: hourly?.labels || [],
@@ -69,7 +89,7 @@ export default function AnalyticsView() {
       {
         label: "Post Count",
         data: hourly?.data || [],
-        backgroundColor: "rgba(96, 165, 250, 0.35)", 
+        backgroundColor: "rgba(96, 165, 250, 0.35)",
         borderColor: "#60A5FA",
         borderWidth: 2,
         hoverBackgroundColor: "rgba(96, 165, 250, 0.75)",
@@ -82,7 +102,6 @@ export default function AnalyticsView() {
   const hourlyOptions: ChartOptions<"bar"> = {
     responsive: true,
     maintainAspectRatio: false,
-
     plugins: {
       legend: {
         display: true,
@@ -102,7 +121,6 @@ export default function AnalyticsView() {
         displayColors: false,
       },
     },
-
     scales: {
       y: {
         ticks: { color: "#94a3b8" },
@@ -113,7 +131,6 @@ export default function AnalyticsView() {
         grid: { display: false },
       },
     },
-
     animation: {
       duration: 900,
       easing: "easeOutQuart",
@@ -121,12 +138,11 @@ export default function AnalyticsView() {
   };
 
   // -----------------------------
-  //   SENTIMENT TIMELINE MERGED
+  // SENTIMENT TIMELINE MERGED
   // -----------------------------
   const sentimentTimeline: SentimentPoint[] = sentiment?.timeline || [];
-
-  const sentimentLabels = sentimentTimeline.map((p: SentimentPoint) =>
-    `${p.hour.toString().padStart(2, "0")}:00`
+  const sentimentLabels = sentimentTimeline.map(
+    (p: SentimentPoint) => `${p.hour.toString().padStart(2, "0")}:00`
   );
 
   const sentimentData = {
@@ -134,7 +150,7 @@ export default function AnalyticsView() {
     datasets: [
       {
         label: "Positive",
-        data: sentimentTimeline.map((p: SentimentPoint) => p.positive),
+        data: sentimentTimeline.map((p) => p.positive),
         borderColor: "#4ADE80",
         tension: 0.35,
         borderWidth: 2,
@@ -142,7 +158,7 @@ export default function AnalyticsView() {
       },
       {
         label: "Neutral",
-        data: sentimentTimeline.map((p: SentimentPoint) => p.neutral),
+        data: sentimentTimeline.map((p) => p.neutral),
         borderColor: "#60A5FA",
         tension: 0.35,
         borderWidth: 2,
@@ -150,7 +166,7 @@ export default function AnalyticsView() {
       },
       {
         label: "Negative",
-        data: sentimentTimeline.map((p: SentimentPoint) => p.negative),
+        data: sentimentTimeline.map((p) => p.negative),
         borderColor: "#F87171",
         tension: 0.35,
         borderWidth: 2,
@@ -158,7 +174,7 @@ export default function AnalyticsView() {
       },
       {
         label: "Unknown",
-        data: sentimentTimeline.map((p: SentimentPoint) => p.unknown),
+        data: sentimentTimeline.map((p) => p.unknown),
         borderColor: "#A78BFA",
         tension: 0.35,
         borderWidth: 2,
@@ -170,11 +186,8 @@ export default function AnalyticsView() {
   const sentimentOptions: ChartOptions<"line"> = {
     responsive: true,
     maintainAspectRatio: false,
-
     plugins: {
-      legend: {
-        labels: { color: "#CBD5E1" },
-      },
+      legend: { labels: { color: "#CBD5E1" } },
       tooltip: {
         enabled: true,
         backgroundColor: "#0f172a",
@@ -186,7 +199,6 @@ export default function AnalyticsView() {
         displayColors: false,
       },
     },
-
     scales: {
       x: {
         ticks: { color: "#94a3b8" },
@@ -197,36 +209,167 @@ export default function AnalyticsView() {
         grid: { color: "#1e293b" },
       },
     },
-
     animation: {
       duration: 800,
       easing: "easeOutQuart",
     },
   };
 
+  // -----------------------------
+  // TOPIC DISTRIBUTION (PIE) – no greens
+  // -----------------------------
+  const topicPieData = {
+    labels: topicDist?.labels || [],
+    datasets: [
+      {
+        data: topicDist?.data || [],
+        backgroundColor: [
+          "#3B82F6", // blue
+          "#8B5CF6", // purple
+          "#EC4899", // pink
+          "#F97316", // orange
+          "#06B6D4", // cyan
+          "#F59E0B", // amber
+          "#6366F1", // indigo
+          "#0EA5E9", // sky
+          "#FB7185", // rose
+          "#A855F7", // violet
+        ],
+        borderWidth: 0,
+      },
+    ],
+  };
+
+  const topicPieOptions: ChartOptions<"pie"> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        position: "bottom",
+        labels: { color: "#CBD5E1", boxWidth: 12 },
+      },
+      tooltip: {
+        backgroundColor: "#0f172a",
+        borderColor: "#1e293b",
+        borderWidth: 1,
+        titleColor: "#ffffff",
+        bodyColor: "#cbd5e1",
+        padding: 10,
+      },
+    },
+    animation: {
+      duration: 900,
+      easing: "easeOutBack",
+    },
+  };
+
+  // -----------------------------
+  // LANGUAGE DISTRIBUTION (PIE) – only one green
+  // -----------------------------
+  const langPieData = {
+    labels: langDist?.labels || [],
+    datasets: [
+      {
+        data: langDist?.data || [],
+        backgroundColor: [
+          "#F97316", // orange
+          "#3B82F6", // blue
+          "#EC4899", // pink
+          "#22C55E", // green (only one)
+          "#EAB308", // yellow
+          "#06B6D4", // cyan
+          "#A855F7", // purple
+          "#F43F5E", // red/rose
+          "#0EA5E9", // sky
+          "#FB923C", // light orange
+        ],
+        borderWidth: 0,
+      },
+    ],
+  };
+
+  const langPieOptions: ChartOptions<"pie"> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        position: "bottom",
+        labels: { color: "#CBD5E1", boxWidth: 12 },
+      },
+      tooltip: {
+        backgroundColor: "#0f172a",
+        borderColor: "#1e293b",
+        borderWidth: 1,
+        titleColor: "#ffffff",
+        bodyColor: "#cbd5e1",
+        padding: 10,
+      },
+    },
+    animation: {
+      duration: 900,
+      easing: "easeOutBack",
+    },
+  };
+
   return (
-    <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div className="p-6 space-y-6">
+      {/* ROW 1: Hourly + Sentiment Timeline */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Hourly Engagement Pattern */}
+        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px] col-span-1">
+          <h3 className="text-gray-300 font-semibold mb-4">
+            Hourly Engagement Pattern
+          </h3>
+          <div className="h-[420px]">
+            <Bar data={hourlyData} options={hourlyOptions} />
+          </div>
+        </div>
 
-      {/* Hourly Engagement Pattern */}
-      <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px] col-span-1">
-        <h3 className="text-gray-300 font-semibold mb-4">
-          Hourly Engagement Pattern
-        </h3>
-        <div className="h-[420px]">
-          <Bar data={hourlyData} options={hourlyOptions} />
+        {/* Sentiment Timeline */}
+        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px] col-span-1">
+          <h3 className="text-gray-300 font-semibold mb-4">
+            Sentiment Timeline (Last 24 Hours)
+          </h3>
+          <div className="h-[420px]">
+            <Line data={sentimentData} options={sentimentOptions} />
+          </div>
         </div>
       </div>
 
-      {/* Sentiment Timeline */}
-      <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[500px] col-span-1">
-        <h3 className="text-gray-300 font-semibold mb-4">
-          Sentiment Timeline (Last 24 Hours)
-        </h3>
-        <div className="h-[420px]">
-          <Line data={sentimentData} options={sentimentOptions} />
+      {/* ROW 2: Topic & Language Distribution */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Topic Distribution Pie */}
+        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[420px]">
+          <h3 className="text-gray-300 font-semibold mb-4">
+            Topic Distribution (Last 24 Hours)
+          </h3>
+          <div className="h-[340px]">
+            {topicDist && topicDist.data.length > 0 ? (
+              <Pie data={topicPieData} options={topicPieOptions} />
+            ) : (
+              <p className="text-gray-500 text-sm">
+                Waiting for topics… (pipeline still warming up?)
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Language Distribution Pie */}
+        <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-6 h-[420px]">
+          <h3 className="text-gray-300 font-semibold mb-4">
+            Language Distribution (Last 24 Hours)
+          </h3>
+          <div className="h-[340px]">
+            {langDist && langDist.data.length > 0 ? (
+              <Pie data={langPieData} options={langPieOptions} />
+            ) : (
+              <p className="text-gray-500 text-sm">
+                Waiting for language data…
+              </p>
+            )}
+          </div>
         </div>
       </div>
-
     </div>
   );
 }
