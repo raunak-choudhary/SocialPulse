@@ -121,7 +121,7 @@ export default function SafetyRisk({ posts }: { posts: Post[] }) {
                       <div className="bg-slate-800 border border-slate-700 p-2 rounded text-xs text-slate-200 shadow-xl">
                         <p className="font-bold mb-1">{data.isToxic ? "⚠️ TOXIC" : "Clean"}</p>
                         <p>Score: {data.y.toFixed(2)}</p>
-                        <p className="italic text-slate-400 mt-1">"{data.text}"</p>
+                        <p className="italic text-slate-400 mt-1">&quot;{data.text}&quot;</p>
                       </div>
                     );
                   }

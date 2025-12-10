@@ -1,24 +1,27 @@
 "use client";
 import React from 'react';
-import { Bar, Doughnut, Line } from 'react-chartjs-2';
+import { Bar } from 'react-chartjs-2';
 import useSWR from 'swr';
 import ChartConfig from './ChartConfig'; // Registers Chart.js components
+import SentimentTimeline from "./sentiment/SentimentTimeline";
 
 const fetcher = (url: string) => fetch(url).then(res => res.json());
 
 export default function AnalyticsView() {
   const { data: hourly } = useSWR('/api/dashboard/charts?type=activity_hourly', fetcher);
-  const { data: lang } = useSWR('/api/dashboard/charts?type=language_dist', fetcher); // You need to add this case to API
+  const { data: lang } = useSWR('/api/dashboard/charts?type=language_dist', fetcher);
 
   // Config for Hourly Chart
   const hourlyData = {
     labels: hourly?.labels || [],
-    datasets: [{
-      label: 'Posts',
-      data: hourly?.data || [],
-      backgroundColor: '#5b6fff',
-      borderRadius: 4,
-    }]
+    datasets: [
+      {
+        label: 'Posts',
+        data: hourly?.data || [],
+        backgroundColor: '#5b6fff',
+        borderRadius: 4,
+      }
+    ]
   };
 
   const chartOptions = {
@@ -34,8 +37,8 @@ export default function AnalyticsView() {
   return (
     <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
       <ChartConfig />
-      
-      {/* Hourly Engagement */}
+
+      {/* Hourly Engagement Pattern */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 h-80">
         <h3 className="text-slate-300 font-bold mb-4">Hourly Engagement Pattern</h3>
         <div className="h-64">
@@ -43,9 +46,9 @@ export default function AnalyticsView() {
         </div>
       </div>
 
-      {/* Placeholder for Timeline (implement similarly) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 h-80 flex items-center justify-center">
-        <span className="text-slate-500">Sentiment Timeline Chart (Add API logic)</span>
+      {/* Sentiment Timeline Chart */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 col-span-1 lg:col-span-2">
+        <SentimentTimeline />
       </div>
     </div>
   );

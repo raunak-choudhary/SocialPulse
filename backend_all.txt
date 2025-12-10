@@ -1,0 +1,1153 @@
+# docker-compose.yml
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - 2181:2181
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - 9092:9092
+
+  mongodb:
+    image: mongo:6
+    container_name: mongodb
+    ports:
+      - 27017:27017
+    volumes:
+    - mongodata:/data/db
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3001:3000"
+    environment:
+      MB_DB_FILE: /metabase.db
+
+volumes:
+  mongodata:
+
+
+
+
+from kafka import KafkaConsumer, KafkaProducer
+import json
+import pandas as pd
+from sklearn.ensemble import IsolationForest
+from pymongo import MongoClient
+import copy
+
+KAFKA_BOOTSTRAP = "localhost:9092"
+CONSUME_TOPIC = "social_posts_topics"
+PRODUCE_TOPIC = "social_posts_anomaly"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="anomaly-detector",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB setup
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+anomaly_coll = db["anomalies"]
+
+WINDOW = 200
+texts = []
+topics = []
+events = []
+
+print("Running real-time anomaly detection (topic spike)...")
+
+for msg in consumer:
+    event = msg.value
+
+    # Ensure post_id is present (should come from previous stages)
+    post_id = event.get("post_id")
+    if post_id is None:
+        author = event.get("author", "unknown")
+        created_at = event.get("created_at", "unknown")
+        post_id = f"{author}:{created_at}"
+        event["post_id"] = post_id
+
+    if event.get("topic") is not None:
+        topics.append(event["topic"])
+        texts.append(event.get("text", ""))
+        events.append(event)
+
+    if len(topics) >= WINDOW:
+        # Build topic count/frame for the batch
+        df = pd.DataFrame({"topic": topics})
+        topic_counts = df["topic"].value_counts().sort_index()
+        topic_counts_sum = topic_counts.values.reshape(-1, 1)
+
+        # Apply anomaly (outlier) detection to topic frequencies
+        model = IsolationForest(contamination=0.1, random_state=42)
+        preds = model.fit_predict(topic_counts_sum)
+
+        anomalies = set(topic_counts.index[preds == -1])
+        for i, event in enumerate(events):
+            is_anomaly = event["topic"] in anomalies
+            event["topic_anomaly"] = bool(is_anomaly)
+            if is_anomaly:
+                print(
+                    f"⚠️ Anomalous topic spike detected: "
+                    f"Topic {event['topic']} | {event['text'][:60]}"
+                )
+
+            # Upsert into MongoDB using post_id as unique key
+            anomaly_coll.update_one(
+                {"post_id": event["post_id"]},
+                {"$set": copy.deepcopy(event)},
+                upsert=True,
+            )
+
+            # Send only the original (no _id) to Kafka
+            producer.send(PRODUCE_TOPIC, value=event)
+
+        texts.clear()
+        topics.clear()
+        events.clear()
+        producer.flush()
+from kafka import KafkaConsumer, KafkaProducer
+import spacy
+import json
+from pymongo import MongoClient
+import copy
+
+# Load spaCy English model (expand for other langs if needed)
+nlp = spacy.load("en_core_web_sm")
+
+CONSUME_TOPIC = "social_posts_sentiment"
+PRODUCE_TOPIC = "social_posts_ner"
+KAFKA_BOOTSTRAP = "localhost:9092"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="entity-enrich-group",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB setup
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+ent_coll = db["entities"]
+
+print("Consuming posts, extracting entities...")
+
+for msg in consumer:
+    event = msg.value
+    text = event.get("text", "")
+
+    # Ensure post_id is present (should come from previous stages)
+    post_id = event.get("post_id")
+    if post_id is None:
+        author = event.get("author", "unknown")
+        created_at = event.get("created_at", "unknown")
+        post_id = f"{author}:{created_at}"
+        event["post_id"] = post_id
+
+    # Only process English for demo (spaCy model is English here)
+    if event.get("lang") == "en" and text.strip():
+        doc = nlp(text)
+        entities = [{"text": ent.text, "label": ent.label_} for ent in doc.ents]
+    else:
+        entities = []
+
+    event["entities"] = entities
+
+    # Upsert into MongoDB using post_id as unique key
+    ent_coll.update_one(
+        {"post_id": event["post_id"]},
+        {"$set": copy.deepcopy(event)},
+        upsert=True,
+    )
+
+    print(f"Entities found: {entities} | {text[:60]}")
+    producer.send(PRODUCE_TOPIC, value=event)
+    producer.flush()
+import os
+from kafka import KafkaConsumer
+import json
+import re
+from pymongo import MongoClient
+from datetime import datetime
+
+# Configuration
+CONSUME_TOPIC = "social_posts_enriched"
+KAFKA_BOOTSTRAP = "localhost:9092"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="hashtag-extractor",
+    enable_auto_commit=True,
+)
+
+# MongoDB connection
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+# We store raw hashtag lists here, not aggregates
+hashtag_coll = db["hashtags"] 
+
+print("Extracting Hashtags to MongoDB...")
+
+for msg in consumer:
+    event = msg.value
+    
+    # 1. Filter: Only English
+    if event.get("lang") != "en":
+        continue
+
+    # 2. Extract Hashtags
+    text = event.get("text", "").lower()
+    hashtags = re.findall(r"#\w+", text)
+    
+    # Only save if hashtags exist
+    if hashtags:
+        # 3. Parse Timestamp for efficient querying
+        # (This is the most critical part for the dashboard to work)
+        created_at_str = event.get("created_at")
+        
+
+        # 4. Save to MongoDB
+        # We perform an upsert to avoid duplicates
+        hashtag_coll.update_one(
+            {"post_id": event.get("post_id")}, 
+            {
+                "$set": {
+                    "post_id": event.get("post_id"),
+                    "hashtags": hashtags,  # List: ["#art", "#tech"]
+                    "created_at": created_at_str
+                }
+            },
+            upsert=True
+        )
+        print(f"{created_at_str} | Saved: {hashtags}")import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+from kafka import KafkaConsumer, KafkaProducer
+import json
+from pymongo import MongoClient
+import copy
+from transformers import pipeline
+
+KAFKA_BOOTSTRAP = "localhost:9092"
+CONSUME_TOPIC = "social_posts_summary"
+PRODUCE_TOPIC = "social_posts_final"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="hf-hate-detector",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB setup
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+hate_coll = db["toxicity"]
+
+print("Running hate speech detection (HF pipeline)...")
+classifier = pipeline("text-classification", model="unitary/toxic-bert", device=-1)
+# For a lighter/faster test: model="distilbert-base-uncased-finetuned-sst-2-english"
+
+for msg in consumer:
+    event = msg.value
+    text = event.get("text", "")
+
+    # Ensure post_id is present (should come from previous stages)
+    post_id = event.get("post_id")
+    if post_id is None:
+        author = event.get("author", "unknown")
+        created_at = event.get("created_at", "unknown")
+        post_id = f"{author}:{created_at}"
+        event["post_id"] = post_id
+
+    is_toxic = False
+    toxicity_score = 0.0
+
+    if text.strip():
+        res = classifier(text)
+        # Some models return label as "toxic"/"non-toxic" or "LABEL_1"/"LABEL_0"
+        label = res[0]["label"].lower()
+
+        toxicity_score = float(res[0]["score"])
+        is_toxic = toxicity_score >= 0.6
+
+    event["toxic"] = is_toxic
+    event["toxicity_score"] = toxicity_score
+
+    print(f"Toxic={is_toxic} | Score={toxicity_score:.2f} | {text[:60]}")
+
+    # Upsert into MongoDB using post_id as unique key
+    hate_coll.update_one(
+        {"post_id": event["post_id"]},
+        {"$set": copy.deepcopy(event)},
+        upsert=True,
+    )
+
+    producer.send(PRODUCE_TOPIC, value=event)
+    producer.flush()
+from kafka import KafkaConsumer, KafkaProducer
+import json
+from langdetect import detect
+from pymongo import MongoClient
+import copy
+
+CONSUME_TOPIC = "social_posts"
+PRODUCE_TOPIC = "social_posts_enriched"
+KAFKA_BOOTSTRAP = "localhost:9092"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="lang-enrich-group",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+lang_coll = db["language"]
+
+print("Consuming posts, enriching with language detection...")
+
+for msg in consumer:
+    event = msg.value
+
+    # Only process commit events for normal posts
+    if (
+        event.get("kind") == "commit"
+        and isinstance(event.get("commit"), dict)
+        and event["commit"].get("operation") == "create"
+        and event["commit"].get("collection") == "app.bsky.feed.post"
+        and "record" in event["commit"]
+        and "text" in event["commit"]["record"]
+    ):
+        author = event.get("did", "unknown")
+        text = event["commit"]["record"].get("text", "")
+        created_at = event["commit"]["record"].get("createdAt", "unknown time")
+
+        # Reuse post_id from upstream if present
+        post_id = event.get("post_id")
+        if post_id is None:
+            # Fallback: build something deterministic if needed
+            did = event.get("did", "unknown")
+            time_us = event.get("time_us", "unknown")
+            post_id = f"{did}:{time_us}"
+
+        # Detect language
+        try:
+            lang = detect(text)
+        except Exception:
+            lang = "und"  # undetermined
+
+        enriched_event = {
+            "post_id": post_id,
+            "author": author,
+            "created_at": created_at,
+            "text": text,
+            "lang": lang,
+        }
+
+        # Upsert into MongoDB using post_id as unique key
+        lang_coll.update_one(
+            {"post_id": enriched_event["post_id"]},
+            {"$set": copy.deepcopy(enriched_event)},
+            upsert=True,
+        )
+
+        print(f"Lang {lang} | Post: {text[:60]}")
+        # Send enriched event (with post_id) to Kafka
+        producer.send(PRODUCE_TOPIC, value=enriched_event)
+        producer.flush()
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+from kafka import KafkaConsumer, KafkaProducer
+import json
+from pymongo import MongoClient
+import copy
+from transformers import pipeline
+
+KAFKA_BOOTSTRAP = "localhost:9092"
+CONSUME_TOPIC = "social_posts_anomaly"
+PRODUCE_TOPIC = "social_posts_rumor"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="rumor-detector",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB setup
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+rumor_coll = db["rumor"]
+
+print("Running ML-based rumor detection (zero-shot)...")
+
+# HuggingFace zero-shot pipeline with CPU only
+# classifier = pipeline(
+#     "zero-shot-classification",
+#     model="valhalla/distilbart-mnli-12-6",
+#     device=-1,
+# )
+# For a lighter model, you can use: model="valhalla/distilbart-mnli-12-6"
+
+rumor_labels = ["rumor", "not rumor"]
+
+for msg in consumer:
+    event = msg.value
+    text = event.get("text", "")
+
+    # Ensure post_id is present (should come from previous stages)
+    post_id = event.get("post_id")
+    if post_id is None:
+        author = event.get("author", "unknown")
+        created_at = event.get("created_at", "unknown")
+        post_id = f"{author}:{created_at}"
+        event["post_id"] = post_id
+
+    is_rumor = False
+    rumor_score = 0.0
+
+    if text.strip():
+        # result = classifier(text, rumor_labels)
+        # result['labels'] is ordered by descending score
+        # is_rumor = result["labels"][0] == "rumor"
+        # rumor_score = float(result["scores"][0])
+        rumor_score = 0.0
+        is_rumor = False
+
+    event["is_rumor"] = is_rumor
+    event["rumor_score"] = rumor_score
+
+    print(f"Rumor={is_rumor} | Score={rumor_score:.2f} | {text[:60]}")
+
+    # Upsert into MongoDB using post_id as unique key
+    rumor_coll.update_one(
+        {"post_id": event["post_id"]},
+        {"$set": copy.deepcopy(event)},
+        upsert=True,
+    )
+
+    # Send only the original (no _id) to Kafka
+    producer.send(PRODUCE_TOPIC, value=event)
+    producer.flush()
+from kafka import KafkaConsumer, KafkaProducer
+import json
+from textblob import TextBlob
+from pymongo import MongoClient
+import copy
+
+CONSUME_TOPIC = "social_posts_enriched"
+PRODUCE_TOPIC = "social_posts_sentiment"
+KAFKA_BOOTSTRAP = "localhost:9092"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="sentiment-enrich-group",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB setup
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+sent_coll = db["sentiment"]
+
+print("Consuming enriched posts, adding sentiment scores...")
+
+for msg in consumer:
+    event = msg.value
+    text = event.get("text", "")
+    lang = event.get("lang", "und")
+
+    # Ensure post_id is present (should come from previous stage)
+    post_id = event.get("post_id")
+    if post_id is None:
+        author = event.get("author", "unknown")
+        created_at = event.get("created_at", "unknown")
+        post_id = f"{author}:{created_at}"
+        event["post_id"] = post_id
+
+    # Apply sentiment only to English (for this demo)
+    if lang == "en" and text.strip():
+        blob = TextBlob(text)
+        polarity = blob.sentiment.polarity
+        if polarity > 0.1:
+            sentiment = "positive"
+        elif polarity < -0.1:
+            sentiment = "negative"
+        else:
+            sentiment = "neutral"
+    else:
+        sentiment = "unknown"
+
+    event["sentiment"] = sentiment
+
+    # Upsert into MongoDB using post_id as unique key
+    sent_coll.update_one(
+        {"post_id": event["post_id"]},
+        {"$set": copy.deepcopy(event)},
+        upsert=True,
+    )
+
+    print(f"Sentiment {sentiment} | Lang {lang} | {text[:60]}")
+    producer.send(PRODUCE_TOPIC, value=event)
+    producer.flush()
+from kafka import KafkaConsumer, KafkaProducer
+import json
+import spacy
+import pytextrank
+from pymongo import MongoClient
+import copy
+
+KAFKA_BOOTSTRAP = "localhost:9092"
+CONSUME_TOPIC = "social_posts_rumor"
+PRODUCE_TOPIC = "social_posts_summary"
+
+nlp = spacy.load("en_core_web_sm")
+nlp.add_pipe("textrank")
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="summarizer",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB setup
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+summary_coll = db["summaries"]
+
+print("Running extractive summarization...")
+
+for msg in consumer:
+    event = msg.value
+    text = event.get("text", "")
+
+    # Ensure post_id is present (should come from previous stages)
+    post_id = event.get("post_id")
+    if post_id is None:
+        author = event.get("author", "unknown")
+        created_at = event.get("created_at", "unknown")
+        post_id = f"{author}:{created_at}"
+        event["post_id"] = post_id
+
+    if text.strip():
+        doc = nlp(text)
+        # For short posts, summary == post itself or key phrase
+        summary = " ".join(
+            str(sent)
+            for sent in doc._.textrank.summary(limit_phrases=2, limit_sentences=1)
+        )
+        event["summary"] = summary
+        print(f"Summary: {summary}")
+
+        # Upsert into MongoDB using post_id as unique key
+        summary_coll.update_one(
+            {"post_id": event["post_id"]},
+            {"$set": copy.deepcopy(event)},
+            upsert=True,
+        )
+
+        # Send only the original (without _id) to Kafka
+        producer.send(PRODUCE_TOPIC, value=event)
+        producer.flush()
+import json
+from kafka import KafkaConsumer, KafkaProducer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
+from sklearn.decomposition import NMF
+import pandas as pd
+import nltk
+from pymongo import MongoClient
+import copy
+
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+
+KAFKA_BOOTSTRAP = "localhost:9092"
+CONSUME_TOPIC = "social_posts_ner"
+PRODUCE_TOPIC = "social_posts_topics"
+
+consumer = KafkaConsumer(
+    CONSUME_TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="topic-modeling",
+    enable_auto_commit=True,
+)
+
+producer = KafkaProducer(
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+)
+
+# MongoDB setup
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+topics_coll = db["topics"]
+
+print("Running real-time topic modeling...")
+
+# Batch posts for windowed topic modeling
+batch_texts = []
+batch_events = []
+WINDOW = 150  # Number of posts per topic batch
+
+for msg in consumer:
+    event = msg.value
+
+    # Ensure post_id is present (should come from previous stages)
+    post_id = event.get("post_id")
+    if post_id is None:
+        author = event.get("author", "unknown")
+        created_at = event.get("created_at", "unknown")
+        post_id = f"{author}:{created_at}"
+        event["post_id"] = post_id
+
+    if event.get("lang") == "en":
+        text = event.get("text", "")
+        if text.strip():
+            batch_texts.append(text)
+            batch_events.append(event)
+
+    if len(batch_texts) >= WINDOW:
+        # Preprocess and vectorize
+        stop_words = stopwords.words("english")
+        count_vect = CountVectorizer(stop_words=stop_words, lowercase=True)
+        X_counts = count_vect.fit_transform(batch_texts)
+        tfidf_transformer = TfidfTransformer()
+        X_tfidf = tfidf_transformer.fit_transform(X_counts)
+
+        # Topic model (NMF is simple & interpretable)
+        n_topics = 6  # You can adjust this for more/less topics
+        nmf = NMF(n_components=n_topics, random_state=42)
+        nmf_array = nmf.fit_transform(X_tfidf)
+        topic_labels = nmf_array.argmax(axis=1)
+        words = count_vect.get_feature_names_out()
+        components = nmf.components_
+
+        # Get keywords per topic
+        topic_keywords = []
+        for i, topic in enumerate(components):
+            top_words_idx = topic.argsort()[-10:][::-1]
+            topic_keywords.append([words[j] for j in top_words_idx])
+
+        # Publish topic assignments and update batch
+        for i, event in enumerate(batch_events):
+            topic_id = int(topic_labels[i])
+            event["topic"] = topic_id
+            event["topic_keywords"] = topic_keywords[topic_id]
+
+            # Upsert into MongoDB using post_id as unique key
+            topics_coll.update_one(
+                {"post_id": event["post_id"]},
+                {"$set": copy.deepcopy(event)},
+                upsert=True,
+            )
+
+            # Send only the original (no _id) to Kafka
+            producer.send(PRODUCE_TOPIC, value=event)
+            print(
+                f"Topic {topic_id} | {event['text'][:60]} | "
+                f"Keywords: {', '.join(topic_keywords[topic_id])}"
+            )
+
+        batch_texts.clear()
+        batch_events.clear()
+        producer.flush()
+from kafka import KafkaConsumer
+import json
+
+consumer = KafkaConsumer(
+    "social_posts",
+    bootstrap_servers=["localhost:9092"],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="jetstream-posts-group",
+    enable_auto_commit=True,
+)
+
+print("Waiting for Bluesky posts from Jetstream...")
+
+for msg in consumer:
+    event = msg.value
+
+    # Only handle normal post events (not likes, follows, deletes, etc.)
+    if (
+        event.get("kind") == "commit"
+        and isinstance(event.get("commit"), dict)
+        and event["commit"].get("operation") == "create"
+        and event["commit"].get("collection") == "app.bsky.feed.post"
+        and "record" in event["commit"]
+        and "text" in event["commit"]["record"]
+    ):
+        author = event.get("did", "unknown")
+        text = event["commit"]["record"].get("text", "")
+        created_at = event["commit"]["record"].get("createdAt", "unknown time")
+        print(f"Post by {author} @ {created_at}")
+        print(f"Text: {text}")
+        print("-" * 40)
+from kafka import KafkaConsumer
+import json
+from collections import Counter, defaultdict
+import time
+from pymongo import MongoClient
+
+TOPIC = "social_posts_ner"
+KAFKA_BOOTSTRAP = "localhost:9092"
+
+consumer = KafkaConsumer(
+    TOPIC,
+    bootstrap_servers=[KAFKA_BOOTSTRAP],
+    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    auto_offset_reset="earliest",
+    group_id="trend-aggregation",
+    enable_auto_commit=True,
+)
+
+entity_counter = Counter()
+entity_sentiment = defaultdict(list)
+start_time = time.time()
+
+# MongoDB connection
+mongo = MongoClient("mongodb://localhost:27017/")
+db = mongo["bigdata"]
+trend_coll = db["trend_aggregates"]
+
+print("Tracking entity trends in real time...")
+
+try:
+    while True:
+        msg = next(consumer)
+        event = msg.value
+        entities = event.get("entities", [])
+        sentiment = event.get("sentiment", "neutral")
+
+        for ent in entities:
+            key = f"{ent['label']}:{ent['text']}"
+            entity_counter[key] += 1
+            entity_sentiment[key].append(sentiment)
+
+        # Every 60 seconds, print and save leaderboard
+        if time.time() - start_time > 5:
+            print("\n--- Top 10 Entities (last 5 second) ---")
+            leaderboard = []
+            for key, count in entity_counter.most_common(10):
+                pos = entity_sentiment[key].count("positive")
+                tot = len(entity_sentiment[key])
+                print(f"{key}: {count} mentions ({pos}/{tot} positive)")
+                leaderboard.append({
+                    "entity": key,
+                    "mentions": count,
+                    "positive": pos,
+                    "total": tot
+                })
+
+            # Compute a minute bucket timestamp (e.g., 2025-11-26 11:57 -> same bucket)
+            bucket_ts = int(time.time() // 5) * 5
+
+            # Upsert per minute bucket to avoid duplicate snapshots for same minute
+            trend_coll.update_one(
+                {"bucket_ts": bucket_ts},
+                {
+                    "$set": {
+                        "bucket_ts": bucket_ts,
+                        "leaderboard": leaderboard
+                    }
+                },
+                upsert=True
+            )
+
+            # Reset counters
+            entity_counter.clear()
+            entity_sentiment.clear()
+            start_time = time.time()
+except KeyboardInterrupt:
+    print("\nAggregator stopped.")
+
+import subprocess
+import time
+
+# List your scripts here in the order you want to start them
+scripts_to_run = [
+    "enrich_hate.py",
+    "enrich_summary.py",
+    "enrich_rumor.py",
+    "enrich_anomaly.py",
+    "enrich_topics.py",
+    "enrich_entities.py",
+    "enrich_sentiment.py",
+    "enrich_hashtags.py",
+    "enrich_language.py",
+    "bluesky_jetstream_to_kafka.py"
+]
+
+processes = []
+
+try:
+    # Start each process
+    for script in scripts_to_run:
+        print(f"Starting {script}...")
+        proc = subprocess.Popen(["python", script])
+        processes.append(proc)
+        time.sleep(10)  # small delay to stagger startups
+
+    print("All scripts running. Press Ctrl+C to exit.")
+
+    # Wait indefinitely
+    while True:
+        time.sleep(10)
+
+except KeyboardInterrupt:
+    print("Received exit signal, terminating all processes...")
+    for proc in processes:
+        proc.terminate()
+    print("All processes terminated. Exiting.")
+1. Clone the repo
+
+git clone https://github.com/your-username/bluesky-bigdata-pipeline.git
+
+cd bluesky-bigdata-pipeline
+
+2. Start infrastructure (Kafka, Zookeeper, MongoDB, Metabase)
+
+Make sure Docker Desktop is running.
+
+In the project folder:
+
+docker-compose up -d
+
+This will start:
+
+Zookeeper (Kafka’s coordinator)
+
+Kafka broker
+
+MongoDB
+
+Metabase (if you added it in docker-compose)
+
+3. Create and activate Python virtual environment (only first time)
+
+Create venv:
+
+python3 -m venv nlp_venv
+
+Activate venv:
+
+source nlp_venv/bin/activate (on macOS/Linux)
+
+4. Install required Python libraries
+
+Inside the activated venv (prompt should show (nlp_venv)):
+
+Upgrade tools:
+
+pip install --upgrade pip setuptools wheel
+
+Install all dependencies:
+
+pip install kafka-python pymongo torch transformers spacy textblob nltk pytextrank pandas scikit-learn
+
+5. Download language resources (one-time)
+
+spaCy English model:
+
+python -m spacy download en_core_web_sm
+
+NLTK stopwords (in Python REPL or a small script):
+
+python
+
+then inside Python:
+
+import nltk
+
+nltk.download('stopwords')
+
+exit()
+
+6. Run the pipeline scripts
+
+In one terminal (with venv activated):
+
+Start the Bluesky → Kafka ingester:
+
+python bluesky_jetstream_to_kafka.py
+
+In additional terminals (all in project folder, all with venv activated), run the enrichment steps, for example:
+
+python enrich_language.py
+
+python enrich_sentiment.py
+
+python enrich_entities.py
+
+python enrich_topics.py
+
+python enrich_anomaly.py
+
+python enrich_rumor.py
+
+python enrich_summary.py
+
+python enrich_hate.py
+
+python trend_aggregator.py
+
+(Or if you have a master script like script.py that starts them all, run that instead: python script.py.)
+
+7. View data in MongoDB / Metabase
+
+MongoDB:
+
+Connect with MongoDB Compass to mongodb://localhost:27017/
+
+Database: bigdata
+
+Collections: raw_posts, language, sentiment, entities, topics, anomalies, rumor, summaries, toxicity, trend_aggregates.
+
+Metabase:
+
+Go to http://localhost:3000 (or whatever port you mapped).
+
+First time: create admin user.
+
+Add MongoDB database:
+
+Type: MongoDB
+
+Host: mongodb (if Metabase in Docker) or localhost
+
+Port: 27017
+
+Database: bigdata
+
+Build dashboards from the collections.
+# Bluesky → Kafka → MongoDB NLP Pipeline
+
+This project builds a real‑time data pipeline that ingests posts from the Bluesky Jetstream “firehose”, processes them through multiple NLP stages, and stores both raw and enriched data in MongoDB. Kafka connects the stages and allows the system to scale and replay data.
+
+## Overview
+
+High-level flow:
+
+1. **Bluesky Jetstream listener**  
+   - Connects to Bluesky Jetstream via WebSocket.  
+   - Assigns a stable `post_id` to each post.  
+   - Upserts raw events into MongoDB (`bigdata.raw_posts`).  
+   - Publishes events into Kafka topic `social_posts`.
+
+2. **Language enrichment**  
+   - Consumes from `social_posts`.  
+   - Detects language of each post with `langdetect`.  
+   - Upserts into `bigdata.language`.  
+   - Emits to `social_posts_enriched`.
+
+3. **Sentiment enrichment**  
+   - Consumes from `social_posts_enriched`.  
+   - Uses TextBlob to compute sentiment (positive/negative/neutral for English posts).  
+   - Upserts into `bigdata.sentiment`.  
+   - Emits to `social_posts_sentiment`.
+
+4. **Entity extraction (NER)**  
+   - Consumes from `social_posts_sentiment`.  
+   - Uses spaCy (`en_core_web_sm`) to extract named entities.  
+   - Upserts into `bigdata.entities`.  
+   - Emits to `social_posts_ner`.
+
+5. **Trend aggregation**  
+   - Consumes from `social_posts_ner`.  
+   - Counts entity mentions and associated sentiments in short time windows.  
+   - Every N seconds, writes a leaderboard snapshot into `bigdata.trend_aggregates`.
+
+6. **Topic modeling**  
+   - Consumes batches of posts from `social_posts_ner`.  
+   - Uses scikit‑learn (`CountVectorizer`, `TfidfTransformer`, `NMF`) to infer topics.  
+   - Tags each post with a `topic` id and `topic_keywords`.  
+   - Upserts into `bigdata.topics`.  
+   - Emits to `social_posts_topics`.
+
+7. **Anomaly detection (topic spikes)**  
+   - Consumes from `social_posts_topics`.  
+   - Builds topic-frequency windows and runs `IsolationForest` to flag anomalous spikes.  
+   - Marks events with `topic_anomaly`.  
+   - Upserts into `bigdata.anomalies`.  
+   - Emits to `social_posts_anomaly`.
+
+8. **Rumor detection (zero‑shot)**  
+   - Consumes from `social_posts_anomaly`.  
+   - Uses a Hugging Face zero‑shot model (`facebook/bart-large-mnli`) to classify posts as `rumor` / `not rumor`.  
+   - Adds `is_rumor` and `rumor_score`.  
+   - Upserts into `bigdata.rumor`.  
+   - Emits to `social_posts_rumor`.
+
+9. **Summarization (keyphrase‑based)**  
+   - Consumes from `social_posts_rumor`.  
+   - Uses spaCy + PyTextRank to generate a short extractive summary or key phrase.  
+   - Adds `summary`.  
+   - Upserts into `bigdata.summaries`.  
+   - Emits to `social_posts_summary`.
+
+10. **Hate / toxicity detection**  
+    - Consumes from `social_posts_summary`.  
+    - Uses a Hugging Face text‑classification model (`unitary/toxic-bert`) to score toxicity.  
+    - Adds `toxic` and `toxicity_score`.  
+    - Upserts into `bigdata.toxicity`.  
+    - Emits to `social_posts_final`.
+
+A small launcher script (`run_all.py` or similar) starts all the individual enrichment scripts in separate subprocesses so the whole pipeline runs with one command.
+
+## Key Concepts
+
+- **Kafka topics**  
+  Each stage reads from one topic and writes to the next:
+  - `social_posts` → `social_posts_enriched` → `social_posts_sentiment` → `social_posts_ner` →  
+    `social_posts_topics` → `social_posts_anomaly` → `social_posts_rumor` → `social_posts_summary` → `social_posts_final`.
+
+- **Stable `post_id`**  
+  All collections in MongoDB use `post_id` as a unique key:
+  - Writes use `update_one({"post_id": ...}, {"$set": ...}, upsert=True)`  
+  - This makes the pipeline idempotent: reprocessing or replay from Kafka updates the same documents instead of creating duplicates.
+
+- **MongoDB schema** (database `bigdata`)
+  - `raw_posts`: full raw Jetstream events.  
+  - `language`: `post_id`, `author`, `text`, `lang`.  
+  - `sentiment`: language + sentiment label.  
+  - `entities`: entities list per post.  
+  - `trend_aggregates`: periodic top-entities leaderboard.  
+  - `topics`: topic id and keywords for each post.  
+  - `anomalies`: anomaly flag for topic spikes.  
+  - `rumor`: rumor classification and score.  
+  - `summaries`: short summary text per post.  
+  - `toxicity`: toxicity classification and score.
+
+- **Cursor-based resume for Jetstream**  
+  The Bluesky listener stores the last seen `time_us` in a small Mongo collection (e.g., `jetstream_cursors`). On restart, it reconnects with a `cursor` parameter slightly before the last value and continues streaming, while `post_id` upserts prevent duplicates.
+
+## Running the Pipeline
+
+1. Start infrastructure (Kafka, Zookeeper, Mongo, Metabase) via Docker Compose.
+2. Activate the Python virtual environment and install all requirements.
+3. Run the launcher script, which:
+   - Starts the Jetstream listener.
+   - Starts each enrichment/aggregation script as its own process, chained via Kafka.
+
+
+
+## Models and libraries used
+
+- **langdetect**: quick language detection.
+- **TextBlob**: rule+lexicon-based sentiment for English.[4]
+- **spaCy**: NER and text processing.[5]
+- **NLTK + scikit-learn (NMF)**: topic modeling and anomaly detection (IsolationForest).[10][5]
+- **PyTextRank**: extractive summarization using TextRank graph algorithm.
+- **HuggingFace Transformers**:
+  - `facebook/bart-large-mnli` for zero-shot rumor detection.[9][8][6]
+  - `unitary/toxic-bert` for hate/toxicity detection.[8][6]
+- **MongoDB**: central document store for each enrichment layer.[11][5]
+- **Kafka (kafka-python)**: streaming backbone for producers/consumers.[13][3][1]
+
+| File                          | Purpose                                                  | Kafka Topic (in)       | Kafka Topic (out)      |
+| ----------------------------- | -------------------------------------------------------- | ---------------------- | ---------------------- |
+| bluesky_jetstream_to_kafka.py | Streams posts from Bluesky to Kafka (social_posts)       | –                      | social_posts           |
+| enrich_language.py            | Detects post language, adds"lang"tag                     | social_posts           | social_posts_enriched  |
+| enrich_sentiment.py           | Runs sentiment analysis (TextBlob)                       | social_posts_enriched  | social_posts_sentiment |
+| enrich_entities.py            | Extracts entities (spaCy NER)                            | social_posts_sentiment | social_posts_ner       |
+| enrich_topics.py              | Clusters posts into topics, adds"topic"&"topic_keywords" | social_posts_ner       | social_posts_topics    |
+| enrich_anomaly.py             | Flags topic spikes/anomalies (IsolationForest)           | social_posts_topics    | social_posts_anomaly   |
+| enrich_rumor.py               | Tags posts as"is_rumor"(keyword or ML)                   | social_posts_anomaly   | social_posts_rumor     |
+| enrich_summary.py             | Summarizes posts (PyTextRank/spaCy)                      | social_posts_rumor     | social_posts_summary   |
+| enrich_hate.py                | Detects toxicity/hate speech (Detoxify/HF pipeline)      | social_posts_summary   | social_posts_final     |
+| trend_aggregator.py           | Prints top-trending entities over rolling window         | social_posts_ner       | (console/log)          |
+| trend_aggregator_to_mongo.py  | Stores trending entities/leaderboards into MongoDB       | social_posts_ner       | MongoDB (aggregator)   |
+
+
+to launch
+1.python bluesky_jetstream_to_kafka.py
+2.python enrich_language.py
+3.python enrich_sentiment.py
+4.python enrich_entities.py
+5.python trend_aggregator.py
+6.python enrich_topics.py
+7.python enrich_anomaly.py
+8.python enrich_rumor.py
+9.python enrich_summary.py
+10.python enrich_hate.py
