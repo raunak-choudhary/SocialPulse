@@ -1,96 +1,118 @@
 # Social Pulse
 **Real-Time Social Media Analytics with Streaming NLP**
 
-Social Pulse is an end-to-end **real-time big data analytics pipeline** designed to process high-volume social media streams and extract actionable insights using **streaming NLP, machine learning, and distributed systems**.  
-The system ingests live data from the **Bluesky Jetstream firehose**, enriches it through multiple NLP stages, and provides analytics-ready storage and dashboards for trend, risk, and sentiment monitoring.
+Social Pulse is an end-to-end real-time big data analytics pipeline designed to process high-volume social media streams and extract actionable insights using streaming NLP, machine learning, and distributed systems.  
+The system ingests live data from the Bluesky Jetstream firehose, enriches it through multiple NLP stages, and provides analytics-ready storage and dashboards for trend, risk, and sentiment monitoring.
 
 ---
 
-## 🚀 Key Highlights
-- Processes **550,000+ social media posts** in a single run
-- Detects **sentiment, entities, topics, anomalies, rumors, and toxicity** in real time
-- **Kafka-based, replay-safe** architecture with idempotent writes
-- Modular **microservices-style pipeline** (each NLP stage is independently scalable)
-- Supports **real-time dashboards** for monitoring trends and risks
+## Table of Contents
+1. [Project Overview](#project-overview)
+2. [Key Highlights](#key-highlights)
+3. [Problem Statement](#problem-statement)
+4. [System Architecture](#system-architecture)
+5. [NLP and Analytics Pipeline](#nlp-and-analytics-pipeline)
+6. [Technology Stack](#technology-stack)
+7. [Insights Generated](#insights-generated)
+8. [How to Run the Pipeline](#how-to-run-the-pipeline)
+9. [Project Structure](#project-structure)
+10. [Scalability and Reliability](#scalability-and-reliability)
+11. [Future Improvements](#future-improvements)
+12. [Team](#team)
+13. [Course Context](#course-context)
 
 ---
 
-## 🧠 Problem Statement
-Modern social media platforms generate massive, high-velocity text streams that are impossible to analyze manually.  
-Social Pulse addresses this by continuously answering:
-- *What* are people talking about?
-- *How* do they feel about it?
-- *Which topics are trending or anomalous?*
-- *Is harmful or misleading content emerging?*
+## Project Overview
+Modern social media platforms generate massive, high-velocity text streams that are impossible to analyze manually. Social Pulse continuously ingests live social media data and transforms it into structured, analytics-ready insights in real time.
 
-The system is built to be **scalable, fault-tolerant, and replay-safe**, closely mirroring real-world production data pipelines.
+The pipeline mirrors production-grade streaming systems and focuses on fault tolerance, scalability, and replay-safe processing.
 
 ---
 
-## 🏗️ System Architecture
+## Key Highlights
+- Processes more than 550,000 social media posts in a single run
+- Real-time detection of sentiment, entities, topics, anomalies, rumors, and toxicity
+- Kafka-based replay-safe streaming architecture
+- Modular microservices-style pipeline where each NLP stage scales independently
+- Real-time dashboards for monitoring trends and risk signals
 
-**High-level flow:**
+---
+
+## Problem Statement
+The goal of Social Pulse is to continuously answer:
+- What topics are people discussing?
+- How do users feel about these topics?
+- Which trends are emerging or behaving anomalously?
+- Is harmful, toxic, or misleading content spreading?
+
+The system is designed to handle firehose-scale data while remaining fault-tolerant and operationally reliable.
+
+---
+
+## System Architecture
+High-level flow:
 
 Bluesky Jetstream → Kafka → NLP Enrichment Pipeline → MongoDB → Dashboard
 
 ### Core Components
-1. **Ingestion Layer**
-   - Connects to Bluesky Jetstream via WebSocket
-   - Assigns a stable `post_id` to every post
-   - Stores raw events in MongoDB
-   - Publishes events to Kafka (`social_posts`)
+**Ingestion Layer**
+- Connects to the Bluesky Jetstream WebSocket
+- Assigns a stable `post_id` to every post
+- Stores raw events in MongoDB
+- Publishes compact events to Kafka (`social_posts`)
 
-2. **Streaming NLP Pipeline (Kafka Topic Chain)**
-   Each stage consumes from one topic and produces to the next:
+**Streaming Processing Layer**
+- Implemented as a chain of Kafka topics
+- Each stage consumes from one topic and produces to the next
 
-   ```
-   social_posts
-     → social_posts_enriched
-     → social_posts_sentiment
-     → social_posts_ner
-     → social_posts_topics
-     → social_posts_anomaly
-     → social_posts_rumor
-     → social_posts_summary
-     → social_posts_final
-   ```
+**Storage Layer**
+- MongoDB with separate collections per enrichment stage
+- All collections keyed by `post_id` using idempotent upserts
 
-3. **Storage Layer**
-   - MongoDB with **separate collections per enrichment stage**
-   - All collections keyed by `post_id` using `upsert=True`
-
-4. **Visualization Layer**
-   - React / Next.js dashboard
-   - Real-time stats, trend analysis, anomaly timelines, and summaries
+**Visualization Layer**
+- React and Next.js dashboard
+- Real-time metrics, anomaly timelines, and topic summaries
 
 ---
 
-## 🔍 NLP & Analytics Stages
+## NLP and Analytics Pipeline
+Kafka topic chain:
 
-| Stage | Description |
-|------|------------|
-| Language Detection | Identifies post language for downstream filtering |
-| Sentiment Analysis | Positive / Neutral / Negative sentiment (English) |
-| Named Entity Recognition | Extracts people, organizations, and locations |
-| Topic Modeling | Groups posts into dynamic topics using NMF |
-| Anomaly Detection | Detects topic spikes using Isolation Forest |
-| Rumor Detection | Zero-shot classification using Transformer models |
-| Summarization | Extractive summaries via TextRank |
-| Toxicity Detection | Flags harmful content with toxicity scores |
+```
+social_posts
+  → social_posts_enriched
+  → social_posts_sentiment
+  → social_posts_ner
+  → social_posts_topics
+  → social_posts_anomaly
+  → social_posts_rumor
+  → social_posts_summary
+  → social_posts_final
+```
+
+### Processing Stages
+- Language Detection
+- Sentiment Analysis
+- Named Entity Recognition
+- Topic Modeling
+- Anomaly Detection
+- Rumor Classification
+- Summarization
+- Toxicity Detection
 
 ---
 
-## 🛠️ Technology Stack
-
-**Streaming & Storage**
+## Technology Stack
+**Streaming and Storage**
 - Apache Kafka
 - MongoDB
 
-**NLP & ML**
+**NLP and Machine Learning**
 - Python
 - spaCy
 - TextBlob
-- scikit-learn (NMF, IsolationForest)
+- scikit-learn
 - Hugging Face Transformers
 - PyTextRank
 
@@ -99,28 +121,27 @@ Bluesky Jetstream → Kafka → NLP Enrichment Pipeline → MongoDB → Dashboar
 - Next.js
 
 **Infrastructure**
-- Docker & Docker Compose
+- Docker
+- Docker Compose
 
 ---
 
-## 📊 Insights Generated (Single Run)
+## Insights Generated
+Single pipeline execution results:
+- Total posts processed: 556,147
+- Anomalous posts detected: 314,984
+- Rumor posts flagged: 4,288
+- Toxic posts flagged: 4,277
 
-- **Total posts processed:** 556,147
-- **Anomalous posts detected:** 314,984
-- **Rumor posts flagged:** 4,288
-- **Toxic posts flagged:** 4,277
-- **Sentiment distribution:**
-  - Neutral: 30.6%
-  - Positive: 22.3%
-  - Negative: 9.1%
-  - Unknown: 38.0%
-
-These insights enable **trust & safety monitoring**, trend discovery, and real-time situational awareness.
+Sentiment distribution:
+- Neutral: 30.6%
+- Positive: 22.3%
+- Negative: 9.1%
+- Unknown: 38.0%
 
 ---
 
-## ▶️ How to Run the Pipeline
-
+## How to Run the Pipeline
 ### 1. Start Infrastructure
 ```bash
 docker-compose up
@@ -134,8 +155,6 @@ pip install -r requirements.txt
 ```
 
 ### 3. Launch Pipeline Components
-Run each service in a separate terminal (or via a launcher script):
-
 ```bash
 python bluesky_jetstream_to_kafka.py
 python enrich_language.py
@@ -151,33 +170,31 @@ python enrich_hate.py
 
 ---
 
-## 📁 Project Structure (Key Files)
-
-| File | Purpose |
-|-----|--------|
-| `bluesky_jetstream_to_kafka.py` | Ingests live Bluesky data |
-| `enrich_language.py` | Language detection |
-| `enrich_sentiment.py` | Sentiment analysis |
-| `enrich_entities.py` | Named entity recognition |
-| `enrich_topics.py` | Topic modeling |
-| `enrich_anomaly.py` | Topic spike detection |
-| `enrich_rumor.py` | Rumor classification |
-| `enrich_summary.py` | Text summarization |
-| `enrich_hate.py` | Toxicity detection |
-| `trend_aggregator.py` | Trending entities |
-
----
-
-## 📈 Scalability & Reliability
-
-- **Replay-safe design** using stable `post_id`
-- Kafka enables **horizontal scaling** per stage
-- MongoDB collections optimized for high write throughput
-- Heavy ML stages can be scaled independently
+## Project Structure
+| File | Description |
+|-----|------------|
+| bluesky_jetstream_to_kafka.py | Ingests live Bluesky data |
+| enrich_language.py | Language detection |
+| enrich_sentiment.py | Sentiment analysis |
+| enrich_entities.py | Named entity recognition |
+| enrich_topics.py | Topic modeling |
+| enrich_anomaly.py | Topic spike detection |
+| enrich_rumor.py | Rumor classification |
+| enrich_summary.py | Text summarization |
+| enrich_hate.py | Toxicity detection |
+| trend_aggregator.py | Trending entities |
 
 ---
 
-## 🔮 Future Improvements
+## Scalability and Reliability
+- Replay-safe processing using stable `post_id`
+- Horizontal scaling via Kafka consumers
+- Independent scaling for computationally expensive ML stages
+- MongoDB schema optimized for high write throughput
+
+---
+
+## Future Improvements
 - Kubernetes-based autoscaling
 - Improved multilingual NLP support
 - Model A/B testing framework
@@ -185,15 +202,15 @@ python enrich_hate.py
 
 ---
 
-## 👥 Team
-- Ritvik Vasantha Kumar  
-- Naman Limani  
-- Dhruv Topiwala  
-- **Raunak Choudhary**  
-- Mukesh Durga  
+## Team
+- **Raunak Choudhary**
+- Ritvik Vasantha Kumar
+- Naman Limani
+- Dhruv Topiwala
+- Mukesh Durga
 
 ---
 
-## 📌 Course Context
-Developed as part of **Big Data Analytics** coursework (Fall 2025).  
-This project demonstrates a **production-style streaming analytics system** suitable for real-world social media monitoring.
+## Course Context
+Developed as part of the Big Data Analytics course (Fall 2025).  
+The project demonstrates a production-style streaming analytics system suitable for real-world social media monitoring.
