@@ -1,150 +1,199 @@
-# Bluesky → Kafka → MongoDB NLP Pipeline
+# Social Pulse
+**Real-Time Social Media Analytics with Streaming NLP**
 
-This project builds a real‑time data pipeline that ingests posts from the Bluesky Jetstream “firehose”, processes them through multiple NLP stages, and stores both raw and enriched data in MongoDB. Kafka connects the stages and allows the system to scale and replay data.
+Social Pulse is an end-to-end **real-time big data analytics pipeline** designed to process high-volume social media streams and extract actionable insights using **streaming NLP, machine learning, and distributed systems**.  
+The system ingests live data from the **Bluesky Jetstream firehose**, enriches it through multiple NLP stages, and provides analytics-ready storage and dashboards for trend, risk, and sentiment monitoring.
 
-## Overview
+---
 
-High-level flow:
+## 🚀 Key Highlights
+- Processes **550,000+ social media posts** in a single run
+- Detects **sentiment, entities, topics, anomalies, rumors, and toxicity** in real time
+- **Kafka-based, replay-safe** architecture with idempotent writes
+- Modular **microservices-style pipeline** (each NLP stage is independently scalable)
+- Supports **real-time dashboards** for monitoring trends and risks
 
-1. **Bluesky Jetstream listener**  
-   - Connects to Bluesky Jetstream via WebSocket.  
-   - Assigns a stable `post_id` to each post.  
-   - Upserts raw events into MongoDB (`bigdata.raw_posts`).  
-   - Publishes events into Kafka topic `social_posts`.
+---
 
-2. **Language enrichment**  
-   - Consumes from `social_posts`.  
-   - Detects language of each post with `langdetect`.  
-   - Upserts into `bigdata.language`.  
-   - Emits to `social_posts_enriched`.
+## 🧠 Problem Statement
+Modern social media platforms generate massive, high-velocity text streams that are impossible to analyze manually.  
+Social Pulse addresses this by continuously answering:
+- *What* are people talking about?
+- *How* do they feel about it?
+- *Which topics are trending or anomalous?*
+- *Is harmful or misleading content emerging?*
 
-3. **Sentiment enrichment**  
-   - Consumes from `social_posts_enriched`.  
-   - Uses TextBlob to compute sentiment (positive/negative/neutral for English posts).  
-   - Upserts into `bigdata.sentiment`.  
-   - Emits to `social_posts_sentiment`.
+The system is built to be **scalable, fault-tolerant, and replay-safe**, closely mirroring real-world production data pipelines.
 
-4. **Entity extraction (NER)**  
-   - Consumes from `social_posts_sentiment`.  
-   - Uses spaCy (`en_core_web_sm`) to extract named entities.  
-   - Upserts into `bigdata.entities`.  
-   - Emits to `social_posts_ner`.
+---
 
-5. **Trend aggregation**  
-   - Consumes from `social_posts_ner`.  
-   - Counts entity mentions and associated sentiments in short time windows.  
-   - Every N seconds, writes a leaderboard snapshot into `bigdata.trend_aggregates`.
+## 🏗️ System Architecture
 
-6. **Topic modeling**  
-   - Consumes batches of posts from `social_posts_ner`.  
-   - Uses scikit‑learn (`CountVectorizer`, `TfidfTransformer`, `NMF`) to infer topics.  
-   - Tags each post with a `topic` id and `topic_keywords`.  
-   - Upserts into `bigdata.topics`.  
-   - Emits to `social_posts_topics`.
+**High-level flow:**
 
-7. **Anomaly detection (topic spikes)**  
-   - Consumes from `social_posts_topics`.  
-   - Builds topic-frequency windows and runs `IsolationForest` to flag anomalous spikes.  
-   - Marks events with `topic_anomaly`.  
-   - Upserts into `bigdata.anomalies`.  
-   - Emits to `social_posts_anomaly`.
+Bluesky Jetstream → Kafka → NLP Enrichment Pipeline → MongoDB → Dashboard
 
-8. **Rumor detection (zero‑shot)**  
-   - Consumes from `social_posts_anomaly`.  
-   - Uses a Hugging Face zero‑shot model (`facebook/bart-large-mnli`) to classify posts as `rumor` / `not rumor`.  
-   - Adds `is_rumor` and `rumor_score`.  
-   - Upserts into `bigdata.rumor`.  
-   - Emits to `social_posts_rumor`.
+### Core Components
+1. **Ingestion Layer**
+   - Connects to Bluesky Jetstream via WebSocket
+   - Assigns a stable `post_id` to every post
+   - Stores raw events in MongoDB
+   - Publishes events to Kafka (`social_posts`)
 
-9. **Summarization (keyphrase‑based)**  
-   - Consumes from `social_posts_rumor`.  
-   - Uses spaCy + PyTextRank to generate a short extractive summary or key phrase.  
-   - Adds `summary`.  
-   - Upserts into `bigdata.summaries`.  
-   - Emits to `social_posts_summary`.
+2. **Streaming NLP Pipeline (Kafka Topic Chain)**
+   Each stage consumes from one topic and produces to the next:
 
-10. **Hate / toxicity detection**  
-    - Consumes from `social_posts_summary`.  
-    - Uses a Hugging Face text‑classification model (`unitary/toxic-bert`) to score toxicity.  
-    - Adds `toxic` and `toxicity_score`.  
-    - Upserts into `bigdata.toxicity`.  
-    - Emits to `social_posts_final`.
+   ```
+   social_posts
+     → social_posts_enriched
+     → social_posts_sentiment
+     → social_posts_ner
+     → social_posts_topics
+     → social_posts_anomaly
+     → social_posts_rumor
+     → social_posts_summary
+     → social_posts_final
+   ```
 
-A small launcher script (`run_all.py` or similar) starts all the individual enrichment scripts in separate subprocesses so the whole pipeline runs with one command.
+3. **Storage Layer**
+   - MongoDB with **separate collections per enrichment stage**
+   - All collections keyed by `post_id` using `upsert=True`
 
-## Key Concepts
+4. **Visualization Layer**
+   - React / Next.js dashboard
+   - Real-time stats, trend analysis, anomaly timelines, and summaries
 
-- **Kafka topics**  
-  Each stage reads from one topic and writes to the next:
-  - `social_posts` → `social_posts_enriched` → `social_posts_sentiment` → `social_posts_ner` →  
-    `social_posts_topics` → `social_posts_anomaly` → `social_posts_rumor` → `social_posts_summary` → `social_posts_final`.
+---
 
-- **Stable `post_id`**  
-  All collections in MongoDB use `post_id` as a unique key:
-  - Writes use `update_one({"post_id": ...}, {"$set": ...}, upsert=True)`  
-  - This makes the pipeline idempotent: reprocessing or replay from Kafka updates the same documents instead of creating duplicates.
+## 🔍 NLP & Analytics Stages
 
-- **MongoDB schema** (database `bigdata`)
-  - `raw_posts`: full raw Jetstream events.  
-  - `language`: `post_id`, `author`, `text`, `lang`.  
-  - `sentiment`: language + sentiment label.  
-  - `entities`: entities list per post.  
-  - `trend_aggregates`: periodic top-entities leaderboard.  
-  - `topics`: topic id and keywords for each post.  
-  - `anomalies`: anomaly flag for topic spikes.  
-  - `rumor`: rumor classification and score.  
-  - `summaries`: short summary text per post.  
-  - `toxicity`: toxicity classification and score.
+| Stage | Description |
+|------|------------|
+| Language Detection | Identifies post language for downstream filtering |
+| Sentiment Analysis | Positive / Neutral / Negative sentiment (English) |
+| Named Entity Recognition | Extracts people, organizations, and locations |
+| Topic Modeling | Groups posts into dynamic topics using NMF |
+| Anomaly Detection | Detects topic spikes using Isolation Forest |
+| Rumor Detection | Zero-shot classification using Transformer models |
+| Summarization | Extractive summaries via TextRank |
+| Toxicity Detection | Flags harmful content with toxicity scores |
 
-- **Cursor-based resume for Jetstream**  
-  The Bluesky listener stores the last seen `time_us` in a small Mongo collection (e.g., `jetstream_cursors`). On restart, it reconnects with a `cursor` parameter slightly before the last value and continues streaming, while `post_id` upserts prevent duplicates.
+---
 
-## Running the Pipeline
+## 🛠️ Technology Stack
 
-1. Start infrastructure (Kafka, Zookeeper, Mongo, Metabase) via Docker Compose.
-2. Activate the Python virtual environment and install all requirements.
-3. Run the launcher script, which:
-   - Starts the Jetstream listener.
-   - Starts each enrichment/aggregation script as its own process, chained via Kafka.
+**Streaming & Storage**
+- Apache Kafka
+- MongoDB
 
+**NLP & ML**
+- Python
+- spaCy
+- TextBlob
+- scikit-learn (NMF, IsolationForest)
+- Hugging Face Transformers
+- PyTextRank
 
+**Frontend**
+- React
+- Next.js
 
-## Models and libraries used
+**Infrastructure**
+- Docker & Docker Compose
 
-- **langdetect**: quick language detection.
-- **TextBlob**: rule+lexicon-based sentiment for English.[4]
-- **spaCy**: NER and text processing.[5]
-- **NLTK + scikit-learn (NMF)**: topic modeling and anomaly detection (IsolationForest).[10][5]
-- **PyTextRank**: extractive summarization using TextRank graph algorithm.
-- **HuggingFace Transformers**:
-  - `facebook/bart-large-mnli` for zero-shot rumor detection.[9][8][6]
-  - `unitary/toxic-bert` for hate/toxicity detection.[8][6]
-- **MongoDB**: central document store for each enrichment layer.[11][5]
-- **Kafka (kafka-python)**: streaming backbone for producers/consumers.[13][3][1]
+---
 
-| File                          | Purpose                                                  | Kafka Topic (in)       | Kafka Topic (out)      |
-| ----------------------------- | -------------------------------------------------------- | ---------------------- | ---------------------- |
-| bluesky_jetstream_to_kafka.py | Streams posts from Bluesky to Kafka (social_posts)       | –                      | social_posts           |
-| enrich_language.py            | Detects post language, adds"lang"tag                     | social_posts           | social_posts_enriched  |
-| enrich_sentiment.py           | Runs sentiment analysis (TextBlob)                       | social_posts_enriched  | social_posts_sentiment |
-| enrich_entities.py            | Extracts entities (spaCy NER)                            | social_posts_sentiment | social_posts_ner       |
-| enrich_topics.py              | Clusters posts into topics, adds"topic"&"topic_keywords" | social_posts_ner       | social_posts_topics    |
-| enrich_anomaly.py             | Flags topic spikes/anomalies (IsolationForest)           | social_posts_topics    | social_posts_anomaly   |
-| enrich_rumor.py               | Tags posts as"is_rumor"(keyword or ML)                   | social_posts_anomaly   | social_posts_rumor     |
-| enrich_summary.py             | Summarizes posts (PyTextRank/spaCy)                      | social_posts_rumor     | social_posts_summary   |
-| enrich_hate.py                | Detects toxicity/hate speech (Detoxify/HF pipeline)      | social_posts_summary   | social_posts_final     |
-| trend_aggregator.py           | Prints top-trending entities over rolling window         | social_posts_ner       | (console/log)          |
-| trend_aggregator_to_mongo.py  | Stores trending entities/leaderboards into MongoDB       | social_posts_ner       | MongoDB (aggregator)   |
+## 📊 Insights Generated (Single Run)
 
+- **Total posts processed:** 556,147
+- **Anomalous posts detected:** 314,984
+- **Rumor posts flagged:** 4,288
+- **Toxic posts flagged:** 4,277
+- **Sentiment distribution:**
+  - Neutral: 30.6%
+  - Positive: 22.3%
+  - Negative: 9.1%
+  - Unknown: 38.0%
 
-to launch
-1.python bluesky_jetstream_to_kafka.py
-2.python enrich_language.py
-3.python enrich_sentiment.py
-4.python enrich_entities.py
-5.python trend_aggregator.py
-6.python enrich_topics.py
-7.python enrich_anomaly.py
-8.python enrich_rumor.py
-9.python enrich_summary.py
-10.python enrich_hate.py
+These insights enable **trust & safety monitoring**, trend discovery, and real-time situational awareness.
+
+---
+
+## ▶️ How to Run the Pipeline
+
+### 1. Start Infrastructure
+```bash
+docker-compose up
+```
+
+### 2. Install Dependencies
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Launch Pipeline Components
+Run each service in a separate terminal (or via a launcher script):
+
+```bash
+python bluesky_jetstream_to_kafka.py
+python enrich_language.py
+python enrich_sentiment.py
+python enrich_entities.py
+python trend_aggregator.py
+python enrich_topics.py
+python enrich_anomaly.py
+python enrich_rumor.py
+python enrich_summary.py
+python enrich_hate.py
+```
+
+---
+
+## 📁 Project Structure (Key Files)
+
+| File | Purpose |
+|-----|--------|
+| `bluesky_jetstream_to_kafka.py` | Ingests live Bluesky data |
+| `enrich_language.py` | Language detection |
+| `enrich_sentiment.py` | Sentiment analysis |
+| `enrich_entities.py` | Named entity recognition |
+| `enrich_topics.py` | Topic modeling |
+| `enrich_anomaly.py` | Topic spike detection |
+| `enrich_rumor.py` | Rumor classification |
+| `enrich_summary.py` | Text summarization |
+| `enrich_hate.py` | Toxicity detection |
+| `trend_aggregator.py` | Trending entities |
+
+---
+
+## 📈 Scalability & Reliability
+
+- **Replay-safe design** using stable `post_id`
+- Kafka enables **horizontal scaling** per stage
+- MongoDB collections optimized for high write throughput
+- Heavy ML stages can be scaled independently
+
+---
+
+## 🔮 Future Improvements
+- Kubernetes-based autoscaling
+- Improved multilingual NLP support
+- Model A/B testing framework
+- Real-time alerting for high-risk events
+
+---
+
+## 👥 Team
+- Ritvik Vasantha Kumar  
+- Naman Limani  
+- Dhruv Topiwala  
+- **Raunak Choudhary**  
+- Mukesh Durga  
+
+---
+
+## 📌 Course Context
+Developed as part of **Big Data Analytics** coursework (Fall 2025).  
+This project demonstrates a **production-style streaming analytics system** suitable for real-world social media monitoring.
